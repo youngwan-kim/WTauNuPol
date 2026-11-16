@@ -1,0 +1,46 @@
+docs
+CLAUDE.md
+plots
+slides
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- Build output (in-tree builds; the normal build lives in SKNanoAnalyzerV15) ---
+build/
+*.o
+*.so
+*.a
+*.d
+*.pcm
+*_rdict.pcm
+*ACLiC_dict*
+
+# --- Training outputs (models, held-out scores, per-run metrics) ---
+training/runs/
+*.pt
+*.npz
+
+# --- Analysis outputs ---
+*.root
+*.log
+condor_*.out
+condor_*.err
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+plan.MD
+data
+reports
+scripts
