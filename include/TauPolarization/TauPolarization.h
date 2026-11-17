@@ -8,9 +8,11 @@
 
 #include "MyCorrection.h"
 
-// tau polarization in W -> tau nu. Tasks (--userflags):
+// tau polarization in W -> tau nu,  tasks : 
 //   GenStudy : generator-level polarimeter (MC only)
 //   MuTauSR  : reco-level ttbar -> mu tau_h selection (data and MC).
+//   MuTauCR  : control regions (RecoTausCR) anti-iso tau , Medium tau x >= 1 b / 0 b
+//   ZMuMu    : Z -> mu mu + jets CR (ZMuMuEvents), DY modelling validation
 class TauPolarization final : public AnalyzerCore {
 public:
     void initializeAnalyzer() override;
@@ -24,7 +26,22 @@ private:
     void RunGenStudy();
 
     void BookMuTauSR();
-    void RunMuTauSR();
+    void BookMuTauCR();
+    void BindRecoFields(RNTupleHandle &h);
+    void RunMuTau(bool cr);
+
+    void BookZMuMu();
+    void RunZMuMu();
+
+    struct ZMuMuRow {
+        float weight = 0.f;
+        float btagWeight = 1.f;
+        int nJet = 0, nBJet = 0;
+        float mll = 0.f, ptll = 0.f;
+        float mu1Pt = 0.f, mu2Pt = 0.f;
+        float jet1Pt = 0.f, jet2Pt = 0.f, ht = 0.f;
+        float met = 0.f;
+    };
 
     struct GenTauRow {
         float weight = 0.f;
@@ -38,6 +55,8 @@ private:
         bool valid = false;      // omega computed
         bool clamped = false;    // |omega| > 1 from stored-precision kinematics, clamped
         float omega = -9.f;
+        bool validE = false;     // omegaE computed
+        float omegaE = -9.f;     // polarimeter projected onto lab energies (TauPolarimeter.h)
         float cosThetaStar = -9.f;
         float cosPsi = -9.f;
         float x = -9.f;
@@ -51,9 +70,23 @@ private:
 
     // One row per selected mu tau_h event (OS and SS), before the sign cut.
     struct RecoTauRow {
-        float weight = 0.f;      // full central weight (1 on data)
+        float weight = 0.f;      // full central weight (1 on data), b-tag weight included
+        float btagWeight = 1.f;  // fixed-WP b-tag event weight (1 on data)
+        int region = 0;          // 0 SR, 1 anti-iso tau (>= 1 b), 2 Medium tau 0 b, 3 anti-iso tau 0 b;
+                                 // -1: only a JES/JER lane passes (Syst runs)
+        bool tauPassMedium = true;
         bool oppositeSign = false;
         int nJet = 0, nBJet = 0;
+        // --userflags Syst: jet counts per JES/JER lane and weight ratios varied / nominal
+        // (1 on data). Not re-evaluated per JES/JER lane: MET, m_T, the b-tag weight.
+        int nJetJESUp = 0, nJetJESDown = 0, nJetJERUp = 0, nJetJERDown = 0;
+        int nBJetJESUp = 0, nBJetJESDown = 0, nBJetJERUp = 0, nBJetJERDown = 0;
+        float wTauIDvsJetUp = 1.f, wTauIDvsJetDown = 1.f, wTauIDvsEUp = 1.f, wTauIDvsEDown = 1.f;
+        float wTauIDvsMuUp = 1.f, wTauIDvsMuDown = 1.f;
+        float wMuIDUp = 1.f, wMuIDDown = 1.f, wMuIsoUp = 1.f, wMuIsoDown = 1.f;
+        float wMuTrigUp = 1.f, wMuTrigDown = 1.f, wPUUp = 1.f, wPUDown = 1.f;
+        float wBtagHeavyUp = 1.f, wBtagHeavyDown = 1.f, wBtagLightUp = 1.f, wBtagLightDown = 1.f;
+        float wISRUp = 1.f, wISRDown = 1.f, wFSRUp = 1.f, wFSRDown = 1.f;
         float muonPt = 0.f, muonEta = 0.f;
         float tauPt = 0.f;       // TES-corrected
         float tauMiniAODPt = 0.f;
@@ -75,6 +108,8 @@ private:
         bool genValid = false;
         bool genClamped = false;
         float genOmega = -9.f;
+        bool genValidE = false;
+        float genOmegaE = -9.f;   // use this for DM1 template weights
         float genUpsilon = -9.f;
         float genX = -9.f;
         float genVisPt = 0.f;
@@ -86,6 +121,10 @@ private:
     RNTupleHandle genTaus_;
     RecoTauRow recoRow_;
     RNTupleHandle recoTaus_;
+    RNTupleHandle recoTausCR_;
+    bool doSyst_ = false;       // --userflags Syst
+    ZMuMuRow zRow_;
+    RNTupleHandle zMuMu_;
 };
 
 #endif

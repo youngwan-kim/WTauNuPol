@@ -85,3 +85,18 @@ TEST(GenTauBuilder, OtherNeutralHadronIsOtherMode) {
     ASSERT_EQ(taus.size(), 1u);
     EXPECT_EQ(taus[0].genDM, kDMOther);
 }
+
+TEST(GenTauBuilder, PhotonDaughterIsOtherMode) {
+    // tau -> pi pi0 gamma nu (omega -> pi0 gamma with the omega pruned) has no rho polarimeter.
+    RecordMaker m;
+    const int w = m.Add(24, -1, 30.f, 0.f, 0.f, true, 80.4f);
+    const int tau = m.Add(-15, w, 40.f, 0.f, 0.f);
+    m.Add(211, tau, 15.f, 0.f, 0.f);
+    m.Add(111, tau, 10.f, 0.f, 0.f);
+    m.Add(22, tau, 5.f, 0.f, 0.f);
+    m.Add(-16, tau, 10.f, 0.f, 0.f);
+    const auto taus = BuildGenTausFromW(m.rec);
+    ASSERT_EQ(taus.size(), 1u);
+    EXPECT_EQ(taus[0].nPhotons, 1);
+    EXPECT_EQ(taus[0].genDM, kDMOther);
+}

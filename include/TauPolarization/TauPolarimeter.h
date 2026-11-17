@@ -42,6 +42,13 @@ struct PolarimeterResult {
     int genDM = kDMOther;
     bool clamped = false;       // |omega| exceeded 1 (imprecise inputs) and was clamped
     double u = 0.;              // unpolarized density U (for toy reweighting); rate ~ U (1 + P omega)
+    // Polarimeter projected onto the lab energies (E_tau, E_vis, E_charged) and m_vis:
+    // omegaE = int S_z / int U over the decay configurations those quantities allow.
+    // DM0: equal to omega (already energy based). DM1: see OmegaEnergyDM1.
+    // (1 + P omegaE) / (1 + P_gen omegaE) is the exact reweighting for any observable
+    // built from those quantities (Upsilon, x, visible pT); |omegaE| <= 1 by construction.
+    bool validE = false;
+    float omegaE = -9.f;
 };
 
 // tau, charged, neutral are lab four-vectors
@@ -49,6 +56,13 @@ struct PolarimeterResult {
 // x, upsilon and the angles are filled whenever the kinematics allow. 
 // neutrino is defined as N = tau - (charged + neutral)
 PolarimeterResult ComputePolarimeter(const TLorentzVector &tau, const TLorentzVector &charged, const TLorentzVector &neutral, int genDM);
+
+// DM1 polarimeter averaged over the unmeasured rho-decay azimuth: integrates U and S_z
+// along the curve of (cos psi, phi) that reproduces the lab energy of the charged pion,
+// at the rho direction fixed by E_rho. Inputs are lab energies and masses (GeV).
+// Returns NaN if no configuration matches. nPhi is the azimuthal grid size.
+double OmegaEnergyDM1(double eTau, double mTau, double eRho, double eCharged, double mRho,
+                      double mCharged, double mNeutral, int nPhi = 128);
 
 // w(P) = (1 + P omega) / (1 + pGen omega), uncapped (+inf if the denominator is not positive).
 double RawTemplateWeight(float omega, float pTarget, float pGen);

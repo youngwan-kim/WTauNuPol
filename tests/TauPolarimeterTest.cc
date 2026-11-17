@@ -1,5 +1,6 @@
 #include <TauPolarization/TauPolarimeter.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -219,6 +220,65 @@ TEST(TauPolarimeter, ToyRhoReferenceNumbers) {
         EXPECT_NEAR(alpha, 0.436, 0.01);
         EXPECT_NEAR(fL, 0.718, 0.01);
         EXPECT_NEAR(omegaOverP3, 1., 0.02);
+    }
+}
+
+// omegaE closure
+TEST(TauPolarimeter, DM1EnergyProjectionClosure) {
+    TRandom3 rng(11);
+    const double mMin = kPiChargedMass + kPiNeutralMass, mMax = kTauMass;
+    const double hw = 0.5 * kRhoWidth;
+    const double aMin = std::atan((mMin - kRhoMass) / hw), aMax = std::atan((mMax - kRhoMass) / hw);
+    constexpr int nb = 10;
+    double hDir[2][2][nb] = {}, hProj[2][2][nb] = {};   // [P][var][bin]
+    int nValid = 0;
+    const int nEvents = 100000;
+    for (int i = 0; i < nEvents; ++i) {
+        const double m = kRhoMass + hw * std::tan(rng.Uniform(aMin, aMax));
+        const double s = m * m;
+        const double cauchy = 1. / ((m - kRhoMass) * (m - kRhoMass) + hw * hw);
+        const double bw2 = 1. / ((s - kRhoMass * kRhoMass) * (s - kRhoMass * kRhoMass) + kRhoMass * kRhoMass * kRhoWidth * kRhoWidth);
+        const double phaseSpace = TwoBodyMomentum(kTauMass, m, 0.) / kTauMass * TwoBodyMomentum(m, kPiChargedMass, kPiNeutralMass) / m;
+        const double wMass = bw2 * 2. * m / cauchy * phaseSpace;
+        const LabDecay lab = ToLab(RhoDecay(m, RandomDirection(rng), RandomDirection(rng)), RandomDirection(rng),
+                                   rng.Uniform(10., 300.));
+        const auto r = ComputePolarimeter(lab.tau, lab.charged, lab.neutral, kDM1);
+        ASSERT_TRUE(r.valid);
+        if (!r.validE)
+            continue;
+        ++nValid;
+        ASSERT_LE(std::abs(r.omegaE), 1.f);
+        const int bu = std::clamp(static_cast<int>((r.upsilon + 1.) / 2. * nb), 0, nb - 1);
+        const int bx = std::clamp(static_cast<int>(r.x * nb), 0, nb - 1);
+        for (int k = 0; k < 2; ++k) {
+            const double P = k == 0 ? 1. : -1.;
+            const double wd = wMass * r.u * (1. + P * r.omega), wp = wMass * r.u * (1. + P * r.omegaE);
+            hDir[k][0][bu] += wd;
+            hProj[k][0][bu] += wp;
+            hDir[k][1][bx] += wd;
+            hProj[k][1][bx] += wp;
+        }
+    }
+    EXPECT_GT(nValid, 0.999 * nEvents);
+    for (int k = 0; k < 2; ++k)
+        for (int v = 0; v < 2; ++v) {
+            double sd = 0., sp = 0.;
+            for (int b = 0; b < nb; ++b) {
+                sd += hDir[k][v][b];
+                sp += hProj[k][v][b];
+            }
+            for (int b = 0; b < nb; ++b)
+                EXPECT_NEAR(hDir[k][v][b] / sd, hProj[k][v][b] / sp, 0.01) << "P index " << k << " var " << v << " bin " << b;
+        }
+}
+
+TEST(TauPolarimeter, DM0EnergyOmegaEqualsOmega) {
+    TRandom3 rng(3);
+    for (int i = 0; i < 100; ++i) {
+        const LabDecay lab = ToLab(PiDecay(RandomDirection(rng)), RandomDirection(rng), rng.Uniform(5., 200.));
+        const auto r = ComputePolarimeter(lab.tau, lab.charged, lab.neutral, kDM0);
+        ASSERT_TRUE(r.validE);
+        EXPECT_FLOAT_EQ(r.omegaE, r.omega);
     }
 }
 

@@ -78,7 +78,8 @@ std::vector<GenTau> BuildGenTausFromW(const GenRecord &gen, int *nOtherOrigin) {
         }
         if (t.leptonic) {
             t.genDM = kDMLeptonic;
-        } else if (t.nOtherNeutral > 0) {
+        } else if (t.nOtherNeutral > 0 || t.nPhotons > 0) {
+            // a photon near tau daughters is not necessarily a radiation off a rho
             t.genDM = kDMOther;
         } else {
             t.genDM = GenDecayModeFromCounts(t.nChargedHadrons, t.nPi0);

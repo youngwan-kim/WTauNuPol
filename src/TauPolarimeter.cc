@@ -117,6 +117,16 @@ PolarimeterResult ComputePolarimeter(const TLorentzVector &tau, const TLorentzVe
         out.cosThetaStar = out.omega;
     else if (Q.P() > 0.)
         out.cosThetaStar = static_cast<float>(Q.Vect().Unit().Dot(zhat));
+    if (genDM == kDM0) {
+        out.validE = true;
+        out.omegaE = out.omega;
+    } else {
+        const double oe = OmegaEnergyDM1(tau.E(), m, visible.E(), charged.E(), visible.M(), charged.M() > 0. ? charged.M() : kPiChargedMass, neutral.M() > 0. ? neutral.M() : kPiNeutralMass);
+        if (std::isfinite(oe)) {
+            out.validE = true;
+            out.omegaE = static_cast<float>(oe);
+        }
+    }
     if (genDM == kDM1 && Q.P() > 0.) {
         TLorentzVector cInQ = C;
         cInQ.Boost(-Q.BoostVector());
@@ -126,9 +136,79 @@ PolarimeterResult ComputePolarimeter(const TLorentzVector &tau, const TLorentzVe
     return out;
 }
 
+namespace {
+struct V4 {
+    double e, x, y, z;
+};
+inline double Dot(const V4 &a, const V4 &b) { return a.e * b.e - a.x * b.x - a.y * b.y - a.z * b.z; }
+inline V4 Sub(const V4 &a, const V4 &b) { return {a.e - b.e, a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline V4 Axpy(double k, const V4 &a, const V4 &b) { return {b.e + k * a.e, b.x + k * a.x, b.y + k * a.y, b.z + k * a.z}; }
+} // namespace
+
+double OmegaEnergyDM1(double eTau, double mTau, double eRho, double eCharged, double mRho, double mCharged, double mNeutral, int nPhi) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (!(eTau > mTau) || !(mRho > mCharged + mNeutral) || !(mRho < mTau) || nPhi < 4)
+        return nan;
+    // tau rest frame, z along the tau flight direction; the rho in the x-z plane
+    // (its azimuth around z is irrelevant for S_z).
+    const double gTau = eTau / mTau;
+    const double bTau = std::sqrt(1. - 1. / (gTau * gTau));
+    const double eRhoStar = (mTau * mTau + mRho * mRho) / (2. * mTau);
+    const double pRhoStar = (mTau * mTau - mRho * mRho) / (2. * mTau);
+    // E_rho(lab) = gamma (E* + beta p* cos theta)
+    const double cth = std::clamp((eRho / gTau - eRhoStar) / (bTau * pRhoStar), -1., 1.);
+    const double sth = std::sqrt(1. - cth * cth);
+    const double g1 = eRhoStar / mRho, b1 = pRhoStar / eRhoStar;   // rho boost in the tau frame
+    const double eChStar = (mRho * mRho + mCharged * mCharged - mNeutral * mNeutral) / (2. * mRho);
+    const double qStar = std::sqrt(std::max(0., eChStar * eChStar - mCharged * mCharged));
+    // E_charged(lab) = A + B cos(psi) - D sin(psi) cos(phi)
+    const double A = gTau * g1 * eChStar * (1. + bTau * b1 * cth);
+    const double B = gTau * g1 * qStar * (b1 + bTau * cth);
+    const double D = gTau * bTau * qStar * sth;
+    const double R = eCharged - A;
+
+    const V4 rho{eRhoStar, pRhoStar * sth, 0., pRhoStar * cth};
+    const V4 P{mTau, 0., 0., 0.};
+    const V4 N = Sub(P, rho);
+    const double rho2 = Dot(rho, rho);
+    double sumS = 0., sumU = 0.;
+    for (int k = 0; k < nPhi; ++k) {
+        const double phi = (k + 0.5) * 2. * M_PI / nPhi;
+        const double K = D * std::cos(phi);
+        const double disc = B * B + K * K - R * R;
+        if (!(disc > 0.))
+            continue;
+        for (const int sgn : {+1, -1}) {
+            const double c = (B * R + sgn * K * std::sqrt(disc)) / (B * B + K * K);
+            if (std::abs(c) > 1.)
+                continue;
+            const double s = std::sqrt(1. - c * c);
+            if (std::abs(B * c - K * s - R) > 1e-6 * std::abs(eCharged) + 1e-9)
+                continue; 
+            const double jac = std::abs(B + K * c / std::max(s, 1e-12));
+            // charged pion in the tau frame: rho-frame momentum (q* s cos phi, q* s sin phi, q* c)
+            // in the basis (x', y, n_rho) with x' = (cos th, 0, -sin th), then boosted along n_rho.
+            const double pt1 = qStar * s * std::cos(phi), pt2 = qStar * s * std::sin(phi);
+            const double pPar = g1 * (qStar * c + b1 * eChStar);
+            const V4 ch{g1 * (eChStar + b1 * qStar * c), pt1 * cth + pPar * sth, pt2, -pt1 * sth + pPar * cth};
+            const V4 pi0 = Sub(rho, ch);
+            const V4 q = Sub(ch, pi0);
+            const V4 J = Axpy(-Dot(q, rho) / rho2, rho, q);
+            const double JN = Dot(J, N), JP = Dot(J, P), JJ = Dot(J, J), NP = Dot(N, P);
+            const double U = 2. * JN * JP - JJ * NP;
+            const double Sz = mTau * (2. * JN * J.z - JJ * N.z);
+            sumS += Sz / jac;
+            sumU += U / jac;
+        }
+    }
+    if (!(sumU > 0.))
+        return nan;
+    return std::clamp(sumS / sumU, -1., 1.);
+}
+
 double RawTemplateWeight(float omega, float pTarget, float pGen) {
     if (pTarget == pGen)
-        return 1.; // also at 1 + pGen omega = 0 (omega = +-1 exactly), where the ratio is 0/0
+        return 1.; 
     const double den = 1. + static_cast<double>(pGen) * omega;
     if (!(den > 0.))
         return std::numeric_limits<double>::infinity();
