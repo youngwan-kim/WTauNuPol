@@ -18,13 +18,13 @@ struct GenRecord {
     TLorentzVector P4(std::size_t i) const; // PDG mass for light particles
 };
 
-enum class TauOrigin : int { W = 0, TopW = 1 };
+enum class TauOrigin : int { W = 0, TopW = 1, Z = 2 };
 
 struct GenTau {
     int index = -1;           // last-copy tau in GenPart
     int charge = 0;           // +-1
     TauOrigin origin = TauOrigin::W;
-    int ancestorPdgId = 0;    // first non tau ancestor (+-24)
+    int ancestorPdgId = 0;    // first non tau ancestor (+-24, or 23 with acceptZ)
     TLorentzVector tau, charged, neutral, visible;
     int chargedPdgId = 0;     // leading charged hadron 
     int nChargedHadrons = 0, nPi0 = 0, nPhotons = 0, nOtherNeutral = 0;
@@ -36,10 +36,8 @@ struct GenTau {
 
 constexpr unsigned short kIsLastCopy = 1u << 13;
 
-// all last copy taus whose first non tau ancestor is a W, taus from a W whose 
-// first non-W ancestor is a top are tagged as TopW.
-// taus from other sources are counted as nOtherOrigin 
 std::vector<GenTau> BuildGenTausFromW(const GenRecord &gen, int *nOtherOrigin = nullptr);
+std::vector<GenTau> BuildGenTaus(const GenRecord &gen, bool acceptZ, int *nOtherOrigin = nullptr);
 
 } // namespace TauPol
 

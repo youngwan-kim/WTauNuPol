@@ -26,13 +26,19 @@ int FirstDifferentAncestor(const GenRecord &gen, int i) {
 } // namespace
 
 std::vector<GenTau> BuildGenTausFromW(const GenRecord &gen, int *nOtherOrigin) {
+    return BuildGenTaus(gen, false, nOtherOrigin);
+}
+
+std::vector<GenTau> BuildGenTaus(const GenRecord &gen, bool acceptZ, int *nOtherOrigin) {
     std::vector<GenTau> out;
     const int n = static_cast<int>(gen.size());
     for (int i = 0; i < n; ++i) {
         if (std::abs(gen.pdgId[i]) != 15 || !(gen.statusFlags[i] & kIsLastCopy))
             continue;
         const int anc = FirstDifferentAncestor(gen, i);
-        if (anc < 0 || std::abs(gen.pdgId[anc]) != 24) {
+        const bool fromW = anc >= 0 && std::abs(gen.pdgId[anc]) == 24;
+        const bool fromZ = acceptZ && anc >= 0 && gen.pdgId[anc] == 23;
+        if (!fromW && !fromZ) {
             if (nOtherOrigin)
                 ++*nOtherOrigin;
             continue;
@@ -42,7 +48,10 @@ std::vector<GenTau> BuildGenTausFromW(const GenRecord &gen, int *nOtherOrigin) {
         t.charge = gen.pdgId[i] > 0 ? -1 : +1;
         t.ancestorPdgId = gen.pdgId[anc];
         const int wAnc = FirstDifferentAncestor(gen, anc);
-        t.origin = (wAnc >= 0 && std::abs(gen.pdgId[wAnc]) == 6) ? TauOrigin::TopW : TauOrigin::W;
+        if (fromZ)
+            t.origin = TauOrigin::Z;
+        else
+            t.origin = (wAnc >= 0 && std::abs(gen.pdgId[wAnc]) == 6) ? TauOrigin::TopW : TauOrigin::W;
         t.tau = gen.P4(i);
 
         double leadChargedE = -1.;

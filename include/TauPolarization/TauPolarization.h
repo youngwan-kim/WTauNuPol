@@ -13,6 +13,8 @@
 //   MuTauSR  : reco-level ttbar -> mu tau_h selection (data and MC).
 //   MuTauCR  : control regions (RecoTausCR) anti-iso tau , Medium tau x >= 1 b / 0 b
 //   ZMuMu    : Z -> mu mu + jets CR (ZMuMuEvents), DY modelling validation
+//   ZTauTau  : Z -> tau_mu tau_h (ZTauTauEvents): 0 b jets, no jet-count requirement,
+//              Medium (region 4) and anti-iso (region 5) tau_h; Phase C (DM1 TES, closure)
 class TauPolarization final : public AnalyzerCore {
 public:
     void initializeAnalyzer() override;
@@ -27,8 +29,11 @@ private:
 
     void BookMuTauSR();
     void BookMuTauCR();
+    void BookZTauTau();
+    // SR: RecoTaus (region 0); CR: RecoTausCR (regions 1 to 3); ZTT: ZTauTauEvents (4, 5)
+    enum class MuTauMode { SR, CR, ZTT };
     void BindRecoFields(RNTupleHandle &h);
-    void RunMuTau(bool cr);
+    void RunMuTau(MuTauMode mode);
 
     void BookZMuMu();
     void RunZMuMu();
@@ -41,6 +46,7 @@ private:
         float mu1Pt = 0.f, mu2Pt = 0.f;
         float jet1Pt = 0.f, jet2Pt = 0.f, ht = 0.f;
         float met = 0.f;
+        float lheHT = -1.f;      // LHE_HT (-1 on data / if absent): DY HT-bin coverage studies
     };
 
     struct GenTauRow {
@@ -87,10 +93,18 @@ private:
         float wMuTrigUp = 1.f, wMuTrigDown = 1.f, wPUUp = 1.f, wPUDown = 1.f;
         float wBtagHeavyUp = 1.f, wBtagHeavyDown = 1.f, wBtagLightUp = 1.f, wBtagLightDown = 1.f;
         float wISRUp = 1.f, wISRDown = 1.f, wFSRUp = 1.f, wFSRDown = 1.f;
-        float muonPt = 0.f, muonEta = 0.f;
+        // tt / theory modelling (Syst, MC): LHE scale (muR, muF; correlated pair), MiNNLO
+        // top-pT reweighting and hdamp (powheg TTLL / TTLJ only, 1 otherwise), LHE PDF
+        // members (w_var / w_nom, stored as given, half precision). Selection-level ratios;
+        // the inclusive sums per sample are in the histogram SystSumW for renormalization.
+        float wMuRUp = 1.f, wMuRDown = 1.f, wMuFUp = 1.f, wMuFDown = 1.f;
+        float wMuRFUp = 1.f, wMuRFDown = 1.f;
+        float wTopPt = 1.f, wHdampUp = 1.f, wHdampDown = 1.f;
+        std::vector<float> wPdf;
+        float muonPt = 0.f, muonEta = 0.f, muonPhi = 0.f;
         float tauPt = 0.f;       // TES-corrected
         float tauMiniAODPt = 0.f;
-        float tauEta = 0.f;
+        float tauEta = 0.f, tauPhi = 0.f, tauMass = 0.f;  // TES-corrected tau_h four-vector
         int tauCharge = 0;
         int tauDM = -1;
         int tauDMUParT = -1;
@@ -98,7 +112,9 @@ private:
         float upsilon = -9.f;    // 2 R - 1 with R rescaled to the TES-corrected pT
         float upsilonTesUp = -9.f, upsilonTesDown = -9.f;
         float tauPtTesUp = 0.f, tauPtTesDown = 0.f;
-        float mVis = 0.f, mT = 0.f, met = 0.f;
+        float mVis = 0.f, mT = 0.f, met = 0.f, metPhi = 0.f;
+        float jet1Pt = 0.f;      // leading selected jet (0 if none)
+        float lheHT = -1.f;      // LHE_HT (-1 on data / if absent)
         int genFlav = -1;        // Tau_genPartFlav, -1 on data
         // Matched generator tau from a W (genFlav 5 only), -9/-1 otherwise.
         int genDM = -1;
@@ -122,7 +138,19 @@ private:
     RecoTauRow recoRow_;
     RNTupleHandle recoTaus_;
     RNTupleHandle recoTausCR_;
+    RNTupleHandle recoTausZ_;
     bool doSyst_ = false;       // --userflags Syst
+    bool isPowhegTT_ = false;   // TTLL_powheg / TTLJ_powheg*: top-pT and hdamp reweighting apply
+
+    struct ModelWeights {
+        float muRUp = 1.f, muRDown = 1.f, muFUp = 1.f, muFDown = 1.f, muRFUp = 1.f, muRFDown = 1.f;
+        float isrUp = 1.f, isrDown = 1.f, fsrUp = 1.f, fsrDown = 1.f;
+        float topPt = 1.f, hdampUp = 1.f, hdampDown = 1.f;
+        std::vector<float> pdf;
+    };
+    ModelWeights model_;
+    void ComputeModelWeights();
+
     ZMuMuRow zRow_;
     RNTupleHandle zMuMu_;
 };

@@ -75,6 +75,7 @@ void TauPolarization::initializeAnalyzer() {
     if (!HasFlag("NoTES"))
         EnableTauEnergyScale(kTauID);
     doSyst_ = HasFlag("Syst");
+    isPowhegTT_ = !IsDATA && (MCSample.BeginsWith("TTLL_powheg") || MCSample.BeginsWith("TTLJ_powheg"));
     RegisterTasks();
     InitializeTasks("TauPolAll");
 }
@@ -84,17 +85,80 @@ void TauPolarization::RegisterTasks() {
                  [this] { ValidateGenStudy(); }, [this] { BookGenStudy(); },
                  [this] { RunGenStudy(); });
     RegisterTask("MuTauSR", TaskOptions{false, TaskSystematicPolicy::CentralOnly},
-                 [] {}, [this] { BookMuTauSR(); }, [this] { RunMuTau(false); });
+                 [] {}, [this] { BookMuTauSR(); }, [this] { RunMuTau(MuTauMode::SR); });
     RegisterTask("ZMuMu", TaskOptions{false, TaskSystematicPolicy::CentralOnly},
                  [] {}, [this] { BookZMuMu(); }, [this] { RunZMuMu(); });
     RegisterTask("MuTauCR", TaskOptions{false, TaskSystematicPolicy::CentralOnly},
-                 [] {}, [this] { BookMuTauCR(); }, [this] { RunMuTau(true); });
+                 [] {}, [this] { BookMuTauCR(); }, [this] { RunMuTau(MuTauMode::CR); });
+    RegisterTask("ZTauTau", TaskOptions{false, TaskSystematicPolicy::CentralOnly},
+                 [] {}, [this] { BookZTauTau(); }, [this] { RunMuTau(MuTauMode::ZTT); });
 }
 
 void TauPolarization::executeEvent() {
     if (!HasTasksForSystematic(true))
         return;
+    if (doSyst_ && !IsDATA)
+        ComputeModelWeights();
     RunTasks(true);
+}
+
+// SystSumW bins: 0 nominal, 1-6 muR up / down, muF up / down, muR = muF up / down,
+// 7-10 ISR up / down, FSR up / down, 11 top pT, 12-13 hdamp up / down,
+// 14 + i PDF member i (LHEPdfWeight[i], up to kMaxPdf). 
+void TauPolarization::ComputeModelWeights() {
+    using var = MyCorrection::variation;
+    ModelWeights &m = model_;
+    m = ModelWeights{};
+    try {
+        m.muRUp = GetScaleVariation(var::nom, var::up);
+        m.muRDown = GetScaleVariation(var::nom, var::down);
+        m.muFUp = GetScaleVariation(var::up, var::nom);
+        m.muFDown = GetScaleVariation(var::down, var::nom);
+        m.muRFUp = GetScaleVariation(var::up, var::up);
+        m.muRFDown = GetScaleVariation(var::down, var::down);
+    } catch (const std::exception &) {
+        m.muRUp = m.muRDown = m.muFUp = m.muFDown = m.muRFUp = m.muRFDown = 1.f;
+    }
+    try {
+        m.isrUp = GetPSWeight(var::up, var::nom);
+        m.isrDown = GetPSWeight(var::down, var::nom);
+        m.fsrUp = GetPSWeight(var::nom, var::up);
+        m.fsrDown = GetPSWeight(var::nom, var::down);
+    } catch (const std::exception &) {
+        m.isrUp = m.isrDown = m.fsrUp = m.fsrDown = 1.f;
+    }
+    if (LHEPdfWeight.valid()) {
+        const auto &v = LHEPdfWeight.values();
+        m.pdf.assign(v.begin(), v.end());
+    }
+    if (isPowhegTT_) {
+        // first / last copy of t and tbar (status flags bits 12 / 13, as ModellingPatch)
+        constexpr unsigned short kFirstCopy = 1u << 12, kLastCopy = 1u << 13;
+        const GenViewCollection gens = GetAllGenViews();
+        int ft = -1, fa = -1, lt = -1, la = -1;
+        for (std::size_t i = 0; i < gens.size(); ++i) {
+            const int pdg = gens[i].PdgId();
+            const auto flags = gens[i].StatusFlags();
+            if (pdg == 6 && (flags & kFirstCopy) && ft < 0) ft = static_cast<int>(i);
+            if (pdg == -6 && (flags & kFirstCopy) && fa < 0) fa = static_cast<int>(i);
+            if (pdg == 6 && (flags & kLastCopy)) lt = static_cast<int>(i);
+            if (pdg == -6 && (flags & kLastCopy)) la = static_cast<int>(i);
+        }
+        if (ft >= 0 && fa >= 0 && lt >= 0 && la >= 0) {
+            m.topPt = myCorr->GetTopPtReweight(gens[lt].P4(), gens[la].P4());
+            m.hdampUp = myCorr->GethDampReweight(gens[ft].P4(), gens[fa].P4(), var::up);
+            m.hdampDown = myCorr->GethDampReweight(gens[ft].P4(), gens[fa].P4(), var::down);
+        }
+    }
+    constexpr int kFixed = 14, kMaxPdf = 110, kBins = kFixed + kMaxPdf;
+    const float w = MCweight();
+    const float fixed[kFixed] = {1.f, m.muRUp, m.muRDown, m.muFUp, m.muFDown, m.muRFUp, m.muRFDown,
+                                 m.isrUp, m.isrDown, m.fsrUp, m.fsrDown, m.topPt, m.hdampUp, m.hdampDown};
+    auto h = Hists();
+    for (int i = 0; i < kFixed; ++i)
+        h.Fill("SystSumW", i + 0.5f, w * fixed[i], kBins, 0.f, kBins);
+    for (int i = 0; i < static_cast<int>(m.pdf.size()) && i < kMaxPdf; ++i)
+        h.Fill("SystSumW", kFixed + i + 0.5f, w * m.pdf[i], kBins, 0.f, kBins);
 }
 
 //  GenStudy
@@ -256,6 +320,11 @@ void TauPolarization::BookMuTauCR() {
     BindRecoFields(recoTausCR_);
 }
 
+void TauPolarization::BookZTauTau() {
+    recoTausZ_ = Output().Book("ZTauTauEvents");
+    BindRecoFields(recoTausZ_);
+}
+
 void TauPolarization::BindRecoFields(RNTupleHandle &h) {
     if (doSyst_) {
         RecoTauRow &r = recoRow_;
@@ -273,7 +342,13 @@ void TauPolarization::BindRecoFields(RNTupleHandle &h) {
             .Field("wBtagHeavyUp", r.wBtagHeavyUp).Field("wBtagHeavyDown", r.wBtagHeavyDown)
             .Field("wBtagLightUp", r.wBtagLightUp).Field("wBtagLightDown", r.wBtagLightDown)
             .Field("wISRUp", r.wISRUp).Field("wISRDown", r.wISRDown)
-            .Field("wFSRUp", r.wFSRUp).Field("wFSRDown", r.wFSRDown);
+            .Field("wFSRUp", r.wFSRUp).Field("wFSRDown", r.wFSRDown)
+            .Field("wMuRUp", r.wMuRUp).Field("wMuRDown", r.wMuRDown)
+            .Field("wMuFUp", r.wMuFUp).Field("wMuFDown", r.wMuFDown)
+            .Field("wMuRFUp", r.wMuRFUp).Field("wMuRFDown", r.wMuRFDown)
+            .Field("wTopPt", r.wTopPt).Field("wHdampUp", r.wHdampUp).Field("wHdampDown", r.wHdampDown)
+            .Field("wPdf", r.wPdf)
+            .SetHalfPrecision("wPdf");
     }
     h.Field("weight", recoRow_.weight)
         .Field("btagWeight", recoRow_.btagWeight)
@@ -284,9 +359,12 @@ void TauPolarization::BindRecoFields(RNTupleHandle &h) {
         .Field("nBJet", recoRow_.nBJet)
         .Field("muonPt", recoRow_.muonPt)
         .Field("muonEta", recoRow_.muonEta)
+        .Field("muonPhi", recoRow_.muonPhi)
         .Field("tauPt", recoRow_.tauPt)
         .Field("tauMiniAODPt", recoRow_.tauMiniAODPt)
         .Field("tauEta", recoRow_.tauEta)
+        .Field("tauPhi", recoRow_.tauPhi)
+        .Field("tauMass", recoRow_.tauMass)
         .Field("tauCharge", recoRow_.tauCharge)
         .Field("tauDM", recoRow_.tauDM)
         .Field("tauDMUParT", recoRow_.tauDMUParT)
@@ -299,6 +377,9 @@ void TauPolarization::BindRecoFields(RNTupleHandle &h) {
         .Field("mVis", recoRow_.mVis)
         .Field("mT", recoRow_.mT)
         .Field("met", recoRow_.met)
+        .Field("metPhi", recoRow_.metPhi)
+        .Field("jet1Pt", recoRow_.jet1Pt)
+        .Field("lheHT", recoRow_.lheHT)
         .Field("genFlav", recoRow_.genFlav)
         .Field("genDM", recoRow_.genDM)
         .Field("genCharge", recoRow_.genCharge)
@@ -317,14 +398,19 @@ void TauPolarization::BindRecoFields(RNTupleHandle &h) {
 }
 
 // Shared mu tau_h selection 
-//   cr = false (MuTauSR): medium vsJet tau, >= 2 jets, >= 1 b jet -> RecoTaus (region 0).
-//   cr = true  (MuTauCR): leading VVLoose vsJet tau, >= 2 jets, then
+//   SR  (MuTauSR): medium vsJet tau, >= 2 jets, >= 1 b jet -> RecoTaus (region 0).
+//   CR  (MuTauCR): leading VVLoose vsJet tau, >= 2 jets, then
 //       region 1: tau fails Medium, >= 1 b jet (anti iso, fake enriched)
 //       region 2: tau passes Medium, 0 b jet  (W + jets enriched)
 //       region 3: tau fails Medium,  0 b jet  (fake factor fail side)    -> RecoTausCR.
-// Same-sign events are kept in both trees (oppositeSign = false).
-void TauPolarization::RunMuTau(bool cr) {
-    auto hists = Hists(cr ? "MuTauCR" : "MuTauSR");
+//   ZTT  (ZTauTau): leading VVLoose vsJet tau, 0 b jets, no jet-count requirement (applied
+//       offline), region 4: tau passes Medium, region 5: fails Medium -> ZTauTauEvents;
+//       gen matching also accepts taus from a Z.
+// Same-sign events are kept in all trees (oppositeSign = false).
+void TauPolarization::RunMuTau(MuTauMode mode) {
+    const bool cr = mode == MuTauMode::CR;
+    const bool ztt = mode == MuTauMode::ZTT;
+    auto hists = Hists(ztt ? "ZTauTau" : (cr ? "MuTauCR" : "MuTauSR"));
     const Event ev = GetEvent();
     const float preWeight = IsDATA ? 1.f : MCweight() * ev.GetTriggerLumi(kMuonTrigger) * myCorr->GetPUWeight(ev.nTrueInt());
     
@@ -384,7 +470,7 @@ void TauPolarization::RunMuTau(bool cr) {
         const auto t = taus[i];
         if (std::max({t.Pt(), t.TesPtUp(), t.TesPtDown()}) < kTauPtMin || std::fabs(t.Eta()) > kTauEtaMax)
             continue;
-        if (!t.PassID(cr ? kTauIDLoose : kTauID))
+        if (!t.PassID(mode != MuTauMode::SR ? kTauIDLoose : kTauID))
             continue;
         if (t.P4().DeltaR(muon.P4()) < kDRMuTauMin)
             continue;
@@ -404,6 +490,7 @@ void TauPolarization::RunMuTau(bool cr) {
     float btagWeight = 1.f;
     using var = MyCorrection::variation;
     float bHUp = 1.f, bHDown = 1.f, bLUp = 1.f, bLDown = 1.f;
+    float jet1Pt = 0.f;
     for (std::size_t i = 0; i < jets.size(); ++i) {
         const auto j = jets[i];
         if (j.Pt() < kJetPtMin || std::fabs(j.Eta()) >= kJetEtaMax) 
@@ -413,6 +500,7 @@ void TauPolarization::RunMuTau(bool cr) {
         if (j.P4().DeltaR(muon.P4()) < kJetCleanDR || j.P4().DeltaR(tau.P4()) < kJetCleanDR)
             continue;
         ++nJet;
+        jet1Pt = std::max(jet1Pt, static_cast<float>(j.Pt()));
         const bool tagged = j.GetTaggerResult(JetTagging::JetFlavTagger::ParT, JetTagging::JetFlavTaggerScoreType::B) > bWP;
         if (tagged)
             ++nBJet;
@@ -439,6 +527,8 @@ void TauPolarization::RunMuTau(bool cr) {
     }
 
     const auto regionFor = [&](int nj, int nb) -> int {
+        if (ztt)
+            return nb == 0 ? (tauMedium ? 4 : 5) : -1;
         if (nj < kNJetMin)
             return -1;
         if (!cr)
@@ -473,7 +563,7 @@ void TauPolarization::RunMuTau(bool cr) {
             anyLane = anyLane || regionFor(laneNJ[l], laneNB[l]) >= 0;
         }
     }
-    if (nJet >= kNJetMin)
+    if (ztt || nJet >= kNJetMin)
         step(kJets, preWeight);
     if (!anyLane)
         return;
@@ -554,14 +644,20 @@ void TauPolarization::RunMuTau(bool cr) {
         row.wBtagHeavyDown = ratio(btagWeight, bHDown);
         row.wBtagLightUp = ratio(btagWeight, bLUp);
         row.wBtagLightDown = ratio(btagWeight, bLDown);
-        try {
-            row.wISRUp = GetPSWeight(var::up, var::nom);
-            row.wFSRUp = GetPSWeight(var::nom, var::up);
-            row.wISRDown = GetPSWeight(var::down, var::nom);
-            row.wFSRDown = GetPSWeight(var::nom, var::down);
-        } catch (const std::exception &) {
-            row.wISRUp = row.wFSRUp = row.wISRDown = row.wFSRDown = 1.f;
-        }
+        row.wISRUp = model_.isrUp;
+        row.wISRDown = model_.isrDown;
+        row.wFSRUp = model_.fsrUp;
+        row.wFSRDown = model_.fsrDown;
+        row.wMuRUp = model_.muRUp;
+        row.wMuRDown = model_.muRDown;
+        row.wMuFUp = model_.muFUp;
+        row.wMuFDown = model_.muFDown;
+        row.wMuRFUp = model_.muRFUp;
+        row.wMuRFDown = model_.muRFDown;
+        row.wTopPt = model_.topPt;
+        row.wHdampUp = model_.hdampUp;
+        row.wHdampDown = model_.hdampDown;
+        row.wPdf = model_.pdf;
     }
     row.tauPassMedium = tauMedium;
     row.oppositeSign = os;
@@ -569,9 +665,12 @@ void TauPolarization::RunMuTau(bool cr) {
     row.nBJet = nBJet;
     row.muonPt = muon.Pt();
     row.muonEta = muon.Eta();
+    row.muonPhi = muon.Phi();
     row.tauPt = tau.Pt();
     row.tauMiniAODPt = tau.MiniAODPt();
     row.tauEta = tau.Eta();
+    row.tauPhi = tau.Phi();
+    row.tauMass = tau.P4().M();
     row.tauCharge = tau.Charge();
     row.tauDM = static_cast<int>(tau.DecayMode());
     row.tauDMUParT = static_cast<int>(Tau_decayModeUParT[tauIdx]);
@@ -584,6 +683,9 @@ void TauPolarization::RunMuTau(bool cr) {
     row.mVis = (muon.P4() + tau.P4()).M();
     row.mT = TransverseMass(muon.P4(), met);
     row.met = met.Pt();
+    row.metPhi = met.Phi();
+    row.jet1Pt = jet1Pt;
+    row.lheHT = (!IsDATA && LHE_HT.valid()) ? static_cast<float>(LHE_HT) : -1.f;
     row.genFlav = IsDATA ? -1 : static_cast<int>(tau.GenPartFlav());
 
     if (!IsDATA && row.genFlav == 5) {
@@ -599,7 +701,7 @@ void TauPolarization::RunMuTau(bool cr) {
             rec.mother.push_back(p.MotherIndex());
             rec.statusFlags.push_back(p.StatusFlags());
         }
-        const std::vector<GenTau> genTaus = BuildGenTausFromW(rec, nullptr);
+        const std::vector<GenTau> genTaus = BuildGenTaus(rec, ztt, nullptr);
         const GenTau *best = nullptr;
         float bestDR = kGenMatchDR;
         for (const GenTau &g : genTaus) {
@@ -629,13 +731,13 @@ void TauPolarization::RunMuTau(bool cr) {
             row.genMatchDR = bestDR;
         }
     }
-    (cr ? recoTausCR_ : recoTaus_).Fill();
+    (ztt ? recoTausZ_ : (cr ? recoTausCR_ : recoTaus_)).Fill();
 
     // histogramss  : {OS,SS} x {DM} x {flavour}, nominal rows only.
     if (region < 0)
         return;
-    static const char *kCRDir[] = {"", "AntiIso/", "ZeroB/", "AntiIsoZeroB/"};
-    const std::string dir = std::string(cr ? kCRDir[region] : "") +
+    static const char *kCRDir[] = {"", "AntiIso/", "ZeroB/", "AntiIsoZeroB/", "", "AntiIso/"};
+    const std::string dir = std::string(cr || ztt ? kCRDir[region] : "") +
                             std::string(os ? "OS" : "SS") + "/DM" + std::to_string(row.tauDM) + "/" +
                             FlavName(row.genFlav) + "/";
     hists.Fill(dir + "Upsilon", row.upsilon, weight, 40, -1.f, 1.f);
@@ -657,7 +759,8 @@ void TauPolarization::BookZMuMu() {
         .Field("jet1Pt", zRow_.jet1Pt)
         .Field("jet2Pt", zRow_.jet2Pt)
         .Field("ht", zRow_.ht)
-        .Field("met", zRow_.met);
+        .Field("met", zRow_.met)
+        .Field("lheHT", zRow_.lheHT);
 }
 
 // two tight isolated opposite-sign muons in the Z window with the mu tau_h jet definition, to check how each DY description models >= 2 reconstructed jets
@@ -773,6 +876,7 @@ void TauPolarization::RunZMuMu() {
     row.jet2Pt = j2;
     row.ht = ht;
     row.met = ev.GetMETVector(Event::MET_Type::PUPPI).Pt();
+    row.lheHT = (!IsDATA && LHE_HT.valid()) ? static_cast<float>(LHE_HT) : -1.f;
     zMuMu_.Fill();
     hists.Fill("NJet", static_cast<float>(std::min(nJet, 6)), weight, 7, 0.f, 7.f);
 }
